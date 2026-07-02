@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>成語射擊大作戰</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #1a1a2e;
+            font-family: 'Microsoft JhengHei', sans-serif;
+            touch-action: none;
+        }
+        #gameCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        /* 向量 UI 層，方便觸控點擊 */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* 讓點擊穿透到 Canvas */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+        }
+        .hud {
+            display: flex;
+            justify-content: space-between;
+            color: #fff;
+            font-size: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        #target-box {
+            align-self: center;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(5px);
+            padding: 15px 30px;
+            border-radius: 50px;
+            border: 2px solid #e94560;
+            color: #fff;
+            text-align: center;
+            box-shadow: 0 0 15px rgba(233, 69, 96, 0.5);
+            margin-top: 10px;
+        }
+        #target-idiom {
+            font-size: 28px;
+            font-weight: bold;
+            letter-spacing: 5px;
+            color: #f9d342;
+        }
+        #current-progress {
+            font-size: 22px;
+            margin-top: 5px;
+            color: #4eed50;
+            min-height: 30px;
+        }
+        #start-screen {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(26, 26, 46, 0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 10;
+        }
+        .btn {
+            background: #e94560;
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 24px;
+            border-radius: 30px;
+            cursor: pointer;
+            pointer-events: auto;
+            box-shadow: 0 5px 15px rgba(233, 69, 96, 0.4);
+            transition: transform 0.1s;
+            margin-top: 20px;
+        }
+        .btn:active {
+            transform: scale(0.95);
+        }
+        h1 {
+            font-size: 42px;
+            margin-bottom: 10px;
+            color: #e94560;
+            text-shadow: 0 0 10px rgba(233,69,96,0.5);
+        }
+        p {
+            font-size: 18px;
+            color: #ccc;
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-layer">
+        <div class="hud">
+            <div id="score-display">得分: 0</div>
+            <div id="hp-display">❤️ ❤️ ❤️</div>
+        </div>
+        
+        <div id="target-box">
+            <p>🎯 請依序射擊組成成語：</p>
+            <div id="target-idiom">載入中...</div>
+            <div id="current-progress"></div>
+        </div>
+        
+        <div></div> <!-- 佔位用 -->
+    </div>
+
+    <!-- 開始/結束畫面 -->
+    <div id="start-screen">
+        <h1 id="title">成語射擊大作戰</h1>
+        <p id="desc">依照提示成語的順序，點擊天空中掉落的正確字氣球！</p>
+        <p id="final-score" style="display:none; font-size: 24px; color: #f9d342;"></p>
+        <button id="start-btn" class="btn">開始遊戲</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // 遊戲資料庫
+        const idiomList = [
+            "一心一意", "三心二意", "五光十色", "七上八下", 
+            "馬到成功", "借刀殺人", "如魚得水", "張冠李戴", 
+            "粗心大意", "拔苗助長", "守株待兔", "畫蛇添足"
+        ];
+        
+        // 所有可能出現的干擾字
+        const randomChars = "一二三四五六七八九十百千萬金木水火土日月天地人上下左右前後馬牛羊雞狗豬鳥魚草木花果風雨雷電";
+
+        // 遊戲狀態
+        let gameActive = false;
+        let score = 0;
+        let hp = 3;
+        let currentIdiom = "";
+        let currentProgress = "";
+        let nextCharIndex = 0;
+        let balloons = [];
+        let particles = [];
+        let spawnTimer = 0;
+        let baseSpeed = 1.5;
+
+        // 調整畫布大小以適應螢幕
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // 氣球類別
+        class Balloon {
+            constructor(char, isCorrect) {
+                this.radius = Math.min(canvas.width, canvas.height) * 0.06; // 根據螢幕大小縮放
+                this.x = Math.random() * (canvas.width - this.radius * 2) + this.radius;
+                this.y = -this.radius;
+                this.char = char;
+                this.isCorrect = isCorrect;
+                this.speed = baseSpeed + Math.random() * 1;
+                // 隨機粉嫩色彩
+                this.color = `hsl(${Math.random() * 360}, 75%, 60%)`;
+            }
+
+            update() {
+                this.y += this.speed;
+            }
+
+            draw() {
+                ctx.save();
+                // 繪製氣球線
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y);
+                ctx.lineTo(this.x, this.y + this.radius * 2);
+                ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // 繪製氣球本體
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = this.color;
+                ctx.fill();
+
+                // 繪製氣球打結處
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y + this.radius);
+                ctx.lineTo(this.x - 5, this.y + this.radius + 8);
+                ctx.lineTo(this.x + 5, this.y + this.radius + 8);
+                ctx.closePath();
+                ctx.fillStyle = this.color;
+                ctx.fill();
+
+                // 繪製文字
+                ctx.fillStyle = '#fff';
+                ctx.font = `bold ${this.radius * 1.1}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.shadowBlur = 0; // 文字不發光
+                ctx.fillText(this.char, this.x, this.y);
+                ctx.restore();
+            }
+        }
+
+        // 爆炸粒子效果類別
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.radius = Math.random() * 3 + 2;
+                const angle = Math.random() * Math.PI * 2;
+                const speed = Math.random() * 5 + 2;
+                this.vx = Math.cos(angle) * speed;
+                this.vy = Math.sin(angle) * speed;
+                this.alpha = 1;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.alpha -= 0.02;
+            }
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        // 初始化一題新成語
+        function nextQuestion() {
+            currentIdiom = idiomList[Math.floor(Math.random() * idiomList.length)];
+            currentProgress = "";
+            nextCharIndex = 0;
+            updateUI();
+        }
+
+        // 更新 UI 資訊
+        function updateUI() {
+            document.getElementById('score-display').innerText = `得分: ${score}`;
+            document.getElementById('hp-display').innerText = "❤️ ".repeat(hp);
+            document.getElementById('target-idiom').innerText = currentIdiom;
+            
+            // 處理進度顯示（已答對的字變綠色底或亮色）
+            let progressStr = "";
+            for(let i=0; i<4; i++) {
+                if(i < nextCharIndex) {
+                    progressStr += currentIdiom[i] + " ";
+                } else {
+                    progressStr += "＿ ";
+                }
+            }
+            document.getElementById('current-progress').innerText = progressStr;
+        }
+
+        // 產生氣球機制
+        function manageBalloons() {
+            spawnTimer++;
+            // 每隔一段時間生出一顆氣球
+            if (spawnTimer > 45) {
+                spawnTimer = 0;
+                
+                let char = "";
+                let isCorrect = false;
+
+                // 50% 機率生成目前需要的正確字，50% 機率生成干擾字
+                if (Math.random() < 0.5) {
+                    char = currentIdiom[nextCharIndex];
+                    isCorrect = true;
+                } else {
+                    char = randomChars[Math.floor(Math.random() * randomChars.length)];
+                    // 確保隨機挑到的字不是剛好需要的字
+                    if(char === currentIdiom[nextCharIndex]) isCorrect = true;
+                }
+
+                balloons.push(new Balloon(char, isCorrect));
+            }
+        }
+
+        // 創建爆炸特效
+        function createExplosion(x, y, color) {
+            for (let i = 0; i < 20; i++) {
+                particles.push(new Particle(x, y, color));
+            }
+        }
+
+        // 處理點擊/觸控事件（PointerEvent 完美整合觸控與滑鼠）
+        window.addEventListener('pointerdown', function(e) {
+            if (!gameActive) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+
+            // 從後往前偵測（確保先點到最上層的氣球）
+            for (let i = balloons.length - 1; i >= 0; i--) {
+                const b = balloons[i];
+                const dist = Math.hypot(clickX - b.x, clickY - b.y);
+
+                if (dist < b.radius + 10) { // +10 增加觸控容錯率
+                    createExplosion(b.x, b.y, b.color);
+                    
+                    // 檢查是否擊中正確的字
+                    if (b.char === currentIdiom[nextCharIndex]) {
+                        nextCharIndex++;
+                        score += 10;
+                        
+                        // 完成整句成語
+                        if (nextCharIndex === 4) {
+                            score += 50; // 獎勵分
+                            baseSpeed += 0.2; // 答對成語後速度微微加快
+                            nextQuestion();
+                        } else {
+                            updateUI();
+                        }
+                    } else {
+                        // 點錯字扣血
+                        hp--;
+                        updateUI();
+                        if (hp <= 0) endGame();
+                    }
+                    
+                    balloons.splice(i, 1);
+                    break; 
+                }
+            }
+        });
+
+        // 遊戲主迴圈
+        function gameLoop() {
+            if (!gameActive) return;
+
+            // 清空畫布
+            ctx.fillStyle = '#1a1a2e';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 處理氣球
+            manageBalloons();
+            for (let i = balloons.length - 1; i >= 0; i--) {
+                const b = balloons[i];
+                b.update();
+                b.draw();
+
+                // 氣球飛出螢幕底部
+                if (b.y - b.radius > canvas.height) {
+                    // 如果漏掉的是正確答案的字，則會扣生命值
+                    if (b.char === currentIdiom[nextCharIndex]) {
+                        hp--;
+                        updateUI();
+                        if (hp <= 0) endGame();
+                    }
+                    balloons.splice(i, 1);
+                }
+            }
+
+            // 處理粒子特效
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.update();
+                p.draw();
+                if (p.alpha <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 開始遊戲
+        function startGame() {
+            score = 0;
+            hp = 3;
+            baseSpeed = 1.5;
+            balloons = [];
+            particles = [];
+            gameActive = true;
+            
+            document.getElementById('start-screen').style.display = 'none';
+            
+            nextQuestion();
+            gameLoop();
+        }
+
+        // 結束遊戲
+        function endGame() {
+            gameActive = false;
+            document.getElementById('title').innerText = "遊戲結束";
+            document.getElementById('desc').innerText = "再接再厲！多複習成語可以拿更高分喔！";
+            document.getElementById('final-score').innerText = `最終得分：${score} 分`;
+            document.getElementById('final-score').style.display = 'block';
+            document.getElementById('start-btn').innerText = "重新開始";
+            document.getElementById('start-screen').style.display = 'flex';
+        }
+
+        // 監聽按鈕點擊
+        document.getElementById('start-btn').addEventListener('click', startGame);
+    </script>
+</body>
+</html>
